@@ -1,4 +1,6 @@
-import React, { useState, useMemo, useCallback } from "react";
+import { initializeApp } from "firebase/app";
+import { getAuth, GoogleAuthProvider } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";import React, { useState, useMemo, useCallback } from "react";
 import {
   Wrench, Zap, Fuel, KeyRound, CircleDot, Truck, RotateCw, LifeBuoy,
   Plus, Home, Briefcase, Settings, LogOut, MapPin, Clock,
