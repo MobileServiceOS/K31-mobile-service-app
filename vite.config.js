@@ -6,5 +6,5 @@ import react from "@vitejs/plugin-react";
 // then use: base: "/my-tire-shop/"
 export default defineConfig({
   plugins: [react()],
-  base: "/k31-app/",
+  base: "/K31-mobile-service-app/",
 });
