@@ -1679,6 +1679,7 @@ function bindJobForm() {
     const tireSection = document.getElementById("tire-section");
     if (tireSection) tireSection.style.display = svc?.isTire ? "" : "none";
     refreshPricingPanel();
+    if (window.__updateJobSaveBtn) window.__updateJobSaveBtn();
   });
 
   // Vehicle type
@@ -1737,8 +1738,21 @@ function bindJobForm() {
     });
   });
 
-  // Location search
-  bindCitySearchInput("location", (v) => { _jobDraft.location = v; });
+  // Location search — update draft + refresh save button state
+  bindCitySearchInput("location", (v) => {
+    _jobDraft.location = v;
+    updateSaveButton();
+  });
+
+  // Re-check canSave dynamically (called when location or service changes)
+  function updateSaveButton() {
+    const btn = document.getElementById("save-btn");
+    if (!btn) return;
+    const ok = _jobDraft && _jobDraft.serviceId && (_jobDraft.location || "").trim().length > 0;
+    btn.disabled = !ok;
+  }
+  // Expose on window for service-picker handler to call
+  window.__updateJobSaveBtn = updateSaveButton;
 
   $("#save-btn").onclick = async () => {
     const d = _jobDraft;
