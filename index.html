@@ -1,21 +1,157 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="./k31-logo.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
-    <meta name="theme-color" content="#05060A" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="description" content="K31 Mobile Tire Shop & Roadside Assistance - Professional job tracking & invoicing" />
-    <link rel="apple-touch-icon" href="./k31-logo.png" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
-    <title>K31 Mobile Tire Shop</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>K31 Mobile Tire Shop</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0b0f14;
+      color: white;
+      margin: 0;
+      padding: 20px;
+    }
+    .card {
+      background: #121923;
+      padding: 20px;
+      border-radius: 12px;
+      margin-bottom: 15px;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      margin-top: 5px;
+      margin-bottom: 10px;
+      border-radius: 8px;
+      border: none;
+    }
+    button {
+      padding: 10px 15px;
+      border: none;
+      border-radius: 8px;
+      background: #1ba5ff;
+      color: white;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .job {
+      background: #0f141d;
+      padding: 10px;
+      border-radius: 10px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>K31 Mobile Tire & Roadside</h1>
+
+<div id="auth" class="card">
+  <h2>Login</h2>
+  <input id="email" placeholder="Email">
+  <input id="password" type="password" placeholder="Password">
+  <button onclick="login()">Login</button>
+  <button onclick="register()">Register</button>
+</div>
+
+<div id="app" class="hidden">
+  <button onclick="logout()">Logout</button>
+
+  <div class="card">
+    <h2>Create Job</h2>
+
+    <input id="name" placeholder="Customer Name">
+    <input id="city" placeholder="City">
+
+    <select id="service">
+      <option>Flat Tire Repair</option>
+      <option>Tire Replacement</option>
+      <option>Jump Start</option>
+      <option>Fuel Delivery</option>
+    </select>
+
+    <input id="price" type="number" placeholder="Price">
+
+    <button onclick="saveJob()">Save Job</button>
+  </div>
+
+  <div class="card">
+    <h2>Jobs</h2>
+    <div id="jobs"></div>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, collection, addDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBWfa8KCv2di6_N3t1Z9JDxSHwdgKyFpjA",
+  authDomain: "k31-mobile-service-app.firebaseapp.com",
+  projectId: "k31-mobile-service-app",
+  storageBucket: "k31-mobile-service-app.firebasestorage.app",
+  messagingSenderId: "381823042123",
+  appId: "1:381823042123:web:82cfc28404445ea65c43ce"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth();
+const db = getFirestore();
+
+window.login = async () => {
+  await signInWithEmailAndPassword(auth, email.value, password.value);
+};
+
+window.register = async () => {
+  await createUserWithEmailAndPassword(auth, email.value, password.value);
+};
+
+window.logout = async () => {
+  await signOut(auth);
+};
+
+window.saveJob = async () => {
+  await addDoc(collection(db, "jobs"), {
+    name: name.value,
+    city: city.value,
+    service: service.value,
+    price: price.value
+  });
+  loadJobs();
+};
+
+async function loadJobs() {
+  const snapshot = await getDocs(collection(db, "jobs"));
+  jobs.innerHTML = "";
+  snapshot.forEach(doc => {
+    const j = doc.data();
+    jobs.innerHTML += `
+      <div class="job">
+        ${j.name} - ${j.service} - $${j.price}
+      </div>
+    `;
+  });
+}
+
+onAuthStateChanged(auth, user => {
+  if (user) {
+    authDiv.style.display = "none";
+    app.style.display = "block";
+    loadJobs();
+  } else {
+    authDiv.style.display = "block";
+    app.style.display = "none";
+  }
+});
+
+const authDiv = document.getElementById("auth");
+const appDiv = document.getElementById("app");
+
+</script>
+
+</body>
 </html>
