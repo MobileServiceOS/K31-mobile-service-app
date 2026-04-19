@@ -219,6 +219,37 @@
   .err-msg { background: rgba(239,68,68,.12); color: var(--danger); border: 1px solid rgba(239,68,68,.3); padding: 10px 12px; border-radius: 10px; font-size: 13px; }
   .ok-msg { background: rgba(34,197,94,.12); color: var(--success); border: 1px solid rgba(34,197,94,.3); padding: 10px 12px; border-radius: 10px; font-size: 13px; }
 
+  /* VALIDATION UI */
+  .req { color: var(--danger); margin-left: 2px; font-weight: 800; }
+  .field-err {
+    font-size: 12px; color: var(--danger); margin-top: 8px;
+    padding: 6px 10px; background: rgba(239,68,68,.08);
+    border: 1px solid rgba(239,68,68,.25); border-radius: 8px;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .field-err::before { content: "⚠"; font-size: 12px; }
+  /* Card-level invalid highlight */
+  .card.field-invalid { border-color: rgba(239,68,68,.6); box-shadow: 0 0 0 1px rgba(239,68,68,.3); }
+  /* Input-level invalid highlight (the actual input border turns red) */
+  .input-invalid, input.input-invalid {
+    border-color: var(--danger) !important;
+    box-shadow: 0 0 0 3px rgba(239,68,68,.15) !important;
+  }
+  /* Summary banner above save button */
+  .missing-msg {
+    background: rgba(234,179,8,.1); color: var(--warn);
+    border: 1px solid rgba(234,179,8,.35);
+    padding: 11px 14px; border-radius: 12px;
+    font-size: 13px; margin-top: 8px; margin-bottom: 4px;
+    line-height: 1.4;
+  }
+  .missing-msg b { color: var(--warn); font-weight: 700; }
+  /* Helper text under the disabled button */
+  .save-helper {
+    text-align: center; font-size: 12px; color: var(--mute);
+    margin-top: 8px; font-style: italic;
+  }
+
   .field { margin-bottom: 16px; }
   .field-inline { margin-top: 12px; }
   .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
@@ -1464,7 +1495,8 @@ function initJobDraft(existing) {
     serviceId: existing?.serviceId || first.id,
     vehicleType: existing?.vehicleType || "car",
     location: existing?.location || "",
-    miles: existing?.miles ?? 0,
+    // Keep blank for new jobs so validation forces the user to enter it
+    miles: (existing && existing.miles !== undefined && existing.miles !== null) ? existing.miles : "",
     customAdjustment: existing?.customAdjustment ?? 0,
     overridePrice: existing?.overridePrice ?? "",
     materialCost: existing?.materialCost ?? 0,
@@ -1493,7 +1525,7 @@ function renderJobForm() {
   const hasOverride = d.overridePrice !== "" && d.overridePrice !== null && !isNaN(Number(d.overridePrice));
   const finalPrice = hasOverride ? Math.max(0, Number(d.overridePrice)) : pricing.suggestedPrice;
   const profit = Math.max(0, finalPrice - (Number(d.materialCost) || 0));
-  const canSave = d.serviceId && d.location.trim().length > 0;
+  const canSave = d.serviceId && d.location.trim().length > 0 && d.miles !== "" && d.miles !== null && d.miles !== undefined && !isNaN(Number(d.miles)) && Number(d.miles) >= 0;
 
   const enabledServices = SERVICES.filter(s => state.settings?.servicesConfig?.[s.id]?.enabled);
 
@@ -1507,8 +1539,8 @@ function renderJobForm() {
       <div class="form-body">
 
         <!-- Service -->
-        <section class="card">
-          <h3 class="sec-title">Service</h3>
+        <section class="card" id="svc-card">
+          <h3 class="sec-title">Service <span class="req">*</span></h3>
           <div class="service-picker">
             ${enabledServices.map(s => `
               <button type="button" class="svc-chip ${d.serviceId === s.id ? "on" : ""}" data-svc="${s.id}">
@@ -1516,6 +1548,7 @@ function renderJobForm() {
               </button>
             `).join("")}
           </div>
+          <div class="field-err" id="svc-err" style="display:none;">Select a service</div>
         </section>
 
         <!-- Vehicle Type -->
@@ -1532,13 +1565,15 @@ function renderJobForm() {
         </section>
 
         <!-- Location -->
-        <section class="card">
-          <h3 class="sec-title">Location</h3>
+        <section class="card" id="loc-card">
+          <h3 class="sec-title">Location <span class="req">*</span></h3>
           ${renderCitySearchInput("location", d.location, "Search Connecticut town or city…")}
+          <div class="field-err" id="loc-err" style="display:none;">Enter a location</div>
           <div class="row-2">
             <div class="field-inline">
-              <label class="field-label">Miles from base</label>
+              <label class="field-label">Miles from base <span class="req">*</span></label>
               <input type="number" min="0" step="0.1" id="f-miles" value="${d.miles}"/>
+              <div class="field-err" id="miles-err" style="display:none;">Enter miles from base</div>
             </div>
             <div class="field-inline">
               <label class="field-label">Free miles</label>
@@ -1645,10 +1680,12 @@ function renderJobForm() {
           <textarea rows="3" id="f-notes" placeholder="Any job notes...">${esc(d.notes)}</textarea>
         </section>
 
+        <div id="missing-msg" class="missing-msg" style="display:none;"></div>
         <div class="form-actions">
           <button class="btn-ghost" id="cancel-btn-2">Cancel</button>
           <button class="btn-primary" id="save-btn" ${!canSave ? "disabled" : ""}>${isEdit ? "Update Job" : "Create Job"}</button>
         </div>
+        <div id="save-helper" class="save-helper" style="display:none;">Complete all required fields to create the job</div>
       </div>
     </div>
   `;
@@ -1733,26 +1770,95 @@ function bindJobForm() {
     const map = { "f-miles":"miles", "f-customAdj":"customAdjustment", "f-matCost":"materialCost",
                   "f-override":"overridePrice", "f-tireQty":"tireQty" };
     el.addEventListener("input", () => {
-      _jobDraft[map[id]] = el.value === "" ? (id === "f-override" ? "" : 0) : el.value;
+      // f-miles: keep raw value so validation can detect empty; pricing handles conversion
+      // f-override: keep as "" so override-vs-suggested logic works
+      if (id === "f-miles" || id === "f-override") {
+        _jobDraft[map[id]] = el.value;
+      } else {
+        _jobDraft[map[id]] = el.value === "" ? 0 : el.value;
+      }
       refreshPricingPanel();
+      if (id === "f-miles" && window.__updateJobSaveBtn) window.__updateJobSaveBtn();
     });
   });
 
-  // Location search — update draft + refresh save button state
+  // Location search — update draft + validate
   bindCitySearchInput("location", (v) => {
     _jobDraft.location = v;
-    updateSaveButton();
+    validateJobForm();
   });
 
-  // Re-check canSave dynamically (called when location or service changes)
-  function updateSaveButton() {
+  // Validate and update all field indicators + save button
+  function validateJobForm() {
+    const missing = [];
+    const d = _jobDraft || {};
+
+    // Service check
+    const svcOk = !!d.serviceId;
+    const svcCard = document.getElementById("svc-card");
+    const svcErr = document.getElementById("svc-err");
+    if (svcCard) svcCard.classList.toggle("field-invalid", !svcOk);
+    if (svcErr) svcErr.style.display = svcOk ? "none" : "block";
+    if (!svcOk) missing.push("Select a service");
+
+    // Location check
+    const locOk = (d.location || "").trim().length > 0;
+    const locCard = document.getElementById("loc-card");
+    const locInput = document.getElementById("search-input-location");
+    const locErr = document.getElementById("loc-err");
+    if (locInput) locInput.classList.toggle("input-invalid", !locOk);
+    if (locErr) locErr.style.display = locOk ? "none" : "block";
+    if (!locOk) missing.push("Enter a location");
+
+    // Miles check — must be a non-negative number (0 is valid)
+    const milesVal = d.miles;
+    const milesNum = Number(milesVal);
+    const milesOk = milesVal !== "" && milesVal !== null && milesVal !== undefined && !isNaN(milesNum) && milesNum >= 0;
+    const milesInput = document.getElementById("f-miles");
+    const milesErr = document.getElementById("miles-err");
+    if (milesInput) milesInput.classList.toggle("input-invalid", !milesOk);
+    if (milesErr) milesErr.style.display = milesOk ? "none" : "block";
+    if (!milesOk) missing.push("Enter miles");
+
+    // Update the missing-fields summary
+    const missingMsg = document.getElementById("missing-msg");
+    if (missingMsg) {
+      if (missing.length > 0) {
+        missingMsg.innerHTML = `⚠ <b>Still needed:</b> ${missing.join(" · ")}`;
+        missingMsg.style.display = "block";
+      } else {
+        missingMsg.style.display = "none";
+      }
+    }
+
+    // Save button disabled + helper caption
     const btn = document.getElementById("save-btn");
-    if (!btn) return;
-    const ok = _jobDraft && _jobDraft.serviceId && (_jobDraft.location || "").trim().length > 0;
-    btn.disabled = !ok;
+    const helper = document.getElementById("save-helper");
+    const ok = missing.length === 0;
+    if (btn) btn.disabled = !ok;
+    if (helper) helper.style.display = ok ? "none" : "block";
   }
-  // Expose on window for service-picker handler to call
-  window.__updateJobSaveBtn = updateSaveButton;
+
+  // Expose so other handlers can trigger it
+  window.__updateJobSaveBtn = validateJobForm;
+
+  // Initial run — if user came from Quick Quote and fields are already filled, button should enable;
+  // otherwise errors stay hidden until user interacts (we only show errors after input)
+  // Run once to set disabled state correctly but suppress displaying errors on initial paint
+  validateJobForm();
+  // Hide all error displays on initial paint — we only want them to appear after user interaction
+  ["svc-err","loc-err","miles-err","missing-msg"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = "none";
+  });
+  ["svc-card","loc-card"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove("field-invalid");
+  });
+  const _locInput = document.getElementById("search-input-location");
+  if (_locInput) _locInput.classList.remove("input-invalid");
+  const _milesInput = document.getElementById("f-miles");
+  if (_milesInput) _milesInput.classList.remove("input-invalid");
 
   $("#save-btn").onclick = async () => {
     const d = _jobDraft;
