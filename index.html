@@ -42,6 +42,9 @@
       border-radius: 10px;
       margin-top: 10px;
     }
+    #app {
+      display: none;
+    }
   </style>
 </head>
 
@@ -57,7 +60,7 @@
   <button onclick="register()">Register</button>
 </div>
 
-<div id="app" class="hidden">
+<div id="app">
   <button onclick="logout()">Logout</button>
 
   <div class="card">
@@ -102,6 +105,9 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth();
 const db = getFirestore();
 
+const authDiv = document.getElementById("auth");
+const appDiv = document.getElementById("app");
+
 window.login = async () => {
   await signInWithEmailAndPassword(auth, email.value, password.value);
 };
@@ -140,17 +146,13 @@ async function loadJobs() {
 onAuthStateChanged(auth, user => {
   if (user) {
     authDiv.style.display = "none";
-    app.style.display = "block";
+    appDiv.style.display = "block";
     loadJobs();
   } else {
     authDiv.style.display = "block";
-    app.style.display = "none";
+    appDiv.style.display = "none";
   }
 });
-
-const authDiv = document.getElementById("auth");
-const appDiv = document.getElementById("app");
-
 </script>
 
 </body>
