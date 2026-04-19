@@ -320,6 +320,13 @@
   .auth-divider { display: flex; align-items: center; gap: 10px; margin: 16px 0; color: var(--mute); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; }
   .auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
   .auth-foot { text-align: center; color: var(--mute); font-size: 11px; margin-top: 16px; letter-spacing: .05em; }
+  .auth-forgot {
+    background: transparent; border: 0; color: var(--dim);
+    font-size: 13px; font-weight: 500; padding: 8px 4px; margin-top: 2px;
+    cursor: pointer; font-family: inherit; text-align: center;
+  }
+  .auth-forgot:hover, .auth-forgot:active { color: var(--primary); }
+  .auth-forgot:disabled { opacity: .5; }
 
   /* DASHBOARD */
   .week-card {
@@ -635,6 +642,7 @@ import {
   getAuth, onAuthStateChanged,
   signInWithEmailAndPassword, createUserWithEmailAndPassword,
   signInWithPopup, GoogleAuthProvider, signOut,
+  sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 import {
   getFirestore, doc, setDoc, onSnapshot,
@@ -1041,6 +1049,7 @@ function render() {
     <div id="app">
       <main>${body}</main>
       ${needsNav ? renderBottomNav() : ""}
+      <div id="modal-container"></div>
     </div>
   `;
   bindCurrentView();
@@ -1082,7 +1091,9 @@ function renderAuth() {
           <label class="field-label">Password</label>
           <input id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password" />
           <div id="auth-err" style="display:none;" class="err-msg"></div>
+          <div id="auth-ok" style="display:none;" class="ok-msg"></div>
           <button type="submit" class="btn-primary" id="auth-submit">Sign In</button>
+          <button type="button" class="auth-forgot" id="forgot-btn">Forgot password?</button>
         </form>
 
         <div class="auth-divider"><span>or</span></div>
@@ -1140,6 +1151,28 @@ function bindAuth() {
     err.style.display = "none";
     try { await signInWithPopup(auth, googleProvider); }
     catch (ex) { showErr(err, prettyError(ex)); }
+  };
+
+  // Forgot password
+  const forgotBtn = $("#forgot-btn");
+  const ok = $("#auth-ok");
+  if (forgotBtn) forgotBtn.onclick = async () => {
+    err.style.display = "none";
+    ok.style.display = "none";
+    const email = $("#auth-email").value.trim();
+    if (!email) { showErr(err, "Enter your email first, then tap Forgot password."); return; }
+    forgotBtn.disabled = true;
+    forgotBtn.textContent = "Sending...";
+    try {
+      await sendPasswordResetEmail(auth, email);
+      ok.textContent = `Reset link sent to ${email}. Check your inbox.`;
+      ok.style.display = "block";
+    } catch (ex) {
+      showErr(err, prettyError(ex));
+    } finally {
+      forgotBtn.disabled = false;
+      forgotBtn.textContent = "Forgot password?";
+    }
   };
 }
 
@@ -1514,8 +1547,7 @@ function renderJobForm() {
           </div>
         </section>
 
-        ${svc?.isTire ? `
-        <section class="card">
+        <section class="card tire-section" id="tire-section" style="${svc?.isTire ? '' : 'display:none;'}">
           <h3 class="sec-title">Tire Details</h3>
           <div class="row-2">
             <div class="field-inline">
@@ -1538,7 +1570,6 @@ function renderJobForm() {
             </div>
           </div>
         </section>
-        ` : ""}
 
         <!-- Pricing -->
         <section class="card">
@@ -1640,14 +1671,13 @@ function bindJobForm() {
   $("#cancel-btn").onclick = cancel;
   $("#cancel-btn-2").onclick = cancel;
 
-  // Service picker — update DOM locally, only re-render pricing panel
+  // Service picker — update DOM locally, toggle tire section visibility, refresh pricing only
   $$("[data-svc]").forEach(b => b.onclick = () => {
     _jobDraft.serviceId = b.dataset.svc;
     $$("[data-svc]").forEach(x => x.classList.toggle("on", x === b));
     const svc = SERVICES.find(s => s.id === _jobDraft.serviceId);
-    // If switching to/from a tire service, re-render the form (tire section changes)
-    const currentShowsTire = !!$("#f-tireSize");
-    if (svc?.isTire !== currentShowsTire) { render(); return; }
+    const tireSection = document.getElementById("tire-section");
+    if (tireSection) tireSection.style.display = svc?.isTire ? "" : "none";
     refreshPricingPanel();
   });
 
@@ -1863,7 +1893,6 @@ function renderJobDetail() {
           <button class="btn-primary" id="invoice-btn">📄 Invoice</button>
         </div>
       </div>
-      <div id="modal-container"></div>
     </div>
   `;
 }
@@ -2012,37 +2041,46 @@ function renderQuickQuote() {
   document.getElementById("qq-bg").onclick = (e) => { if (e.target.id === "qq-bg") close(); };
   document.getElementById("qq-close").onclick = close;
 
-  // Service picker — local DOM update only
+  // Shared helper — refreshes just the result box
+  const updateResult = () => {
+    const p2 = calcPricing({
+      serviceId: _quote.serviceId, vehicleType: _quote.vehicleType,
+      miles: _quote.miles, materialCost: _quote.materialCost, customAdjustment: 0,
+    });
+    const resWrap = host.querySelector(".quote-result");
+    if (!resWrap) return;
+    resWrap.querySelector(".quote-result-amount").textContent = fmt$(p2.suggestedPrice);
+    resWrap.querySelector(".quote-result-breakdown").textContent =
+      `Base ${fmt$(p2.basePrice)} + Travel ${fmt$(p2.travelCharge)}${p2.bumpedToMin ? ' · min profit applied' : ''}`;
+  };
+
+  // Service picker — toggle "on" class locally, no re-render
   host.querySelectorAll("[data-qq-svc]").forEach(b => {
     b.onclick = () => {
       _quote.serviceId = b.dataset.qqSvc;
-      renderQuickQuote();
+      host.querySelectorAll("[data-qq-svc]").forEach(x => x.classList.toggle("on", x === b));
+      updateResult();
     };
   });
   // Vehicle picker
   host.querySelectorAll("[data-qq-vtype]").forEach(b => {
     b.onclick = () => {
       _quote.vehicleType = b.dataset.qqVtype;
-      renderQuickQuote();
+      host.querySelectorAll("[data-qq-vtype]").forEach(x => x.classList.toggle("on", x === b));
+      updateResult();
     };
   });
-  // Inputs
+  // Number inputs
   const milesEl = document.getElementById("qq-miles");
   const matEl = document.getElementById("qq-material");
-  const updateResult = () => {
+  milesEl.addEventListener("input", () => {
     _quote.miles = Number(milesEl.value) || 0;
+    updateResult();
+  });
+  matEl.addEventListener("input", () => {
     _quote.materialCost = Number(matEl.value) || 0;
-    const p2 = calcPricing({
-      serviceId: _quote.serviceId, vehicleType: _quote.vehicleType,
-      miles: _quote.miles, materialCost: _quote.materialCost, customAdjustment: 0,
-    });
-    const resWrap = host.querySelector(".quote-result");
-    resWrap.querySelector(".quote-result-amount").textContent = fmt$(p2.suggestedPrice);
-    resWrap.querySelector(".quote-result-breakdown").textContent =
-      `Base ${fmt$(p2.basePrice)} + Travel ${fmt$(p2.travelCharge)}${p2.bumpedToMin ? ' · min profit applied' : ''}`;
-  };
-  milesEl.addEventListener("input", updateResult);
-  matEl.addEventListener("input", updateResult);
+    updateResult();
+  });
 
   // Convert quote → full job
   document.getElementById("qq-to-job").onclick = () => {
@@ -2316,7 +2354,7 @@ function bindInventoryForm() {
   const del = $("#inv-delete");
   if (del) del.onclick = () => {
     const id = _invDraft._id;
-    showInlineConfirm("Delete this tire?", async () => {
+    showConfirmModal("Delete this tire?", "This can't be undone.", "Delete", true, async () => {
       await deleteInventory(id);
       _invDraft = null;
       state.editingInv = null;
@@ -2327,7 +2365,8 @@ function bindInventoryForm() {
 }
 
 function showInlineConfirm(msg, onOk) {
-  if (confirm(msg)) onOk();
+  // Kept for backward compat; now routes to branded modal
+  showConfirmModal(msg, "This can't be undone.", "Delete", true, onOk);
 }
 
 /* ============================================================
@@ -2488,14 +2527,13 @@ function bindExpenseForm() {
   const del = $("#exp-delete");
   if (del) del.onclick = () => {
     const id = _expDraft._id;
-    if (confirm("Delete this expense?")) {
-      deleteExpense(id).then(() => {
-        _expDraft = null;
-        state.editingExp = null;
-        state.view = "expenses";
-        render();
-      });
-    }
+    showConfirmModal("Delete this expense?", "This can't be undone.", "Delete", true, async () => {
+      await deleteExpense(id);
+      _expDraft = null;
+      state.editingExp = null;
+      state.view = "expenses";
+      render();
+    });
   };
 }
 
@@ -2650,10 +2688,10 @@ function bindSettings() {
     }
   };
 
-  $("#s-logout").onclick = async () => {
-    if (confirm("Sign out?")) {
+  $("#s-logout").onclick = () => {
+    showConfirmModal("Sign out?", "You'll need to log back in to access your data.", "Sign Out", false, async () => {
       try { await signOut(auth); } catch (e) { console.error(e); }
-    }
+    });
   };
 }
 
