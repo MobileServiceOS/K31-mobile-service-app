@@ -2736,7 +2736,8 @@ function renderInventoryList() {
           <span class="search-icon">🔍</span>
           <input type="text" class="search-input" id="inv-search"
             value="${esc(_invSearch || "")}"
-            placeholder="Search by size, brand, or model..." autocomplete="off"/>
+            placeholder="Search by size, brand, or model..."
+            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
         </div>
       </div>
 
@@ -2746,12 +2747,14 @@ function renderInventoryList() {
         </button>
       </div>
 
-      ${state.inventory.length === 0
-        ? renderEmpty("No tires in stock", "Track inventory so you always know what's on hand.", "Add First Tire", "new-inv")
-        : filtered.length === 0
-          ? `<div class="empty"><div class="empty-ico">🔍</div><div class="empty-title">No matches for "${esc(_invSearch)}"</div><div class="empty-desc">Try a different size or clear your search.</div></div>`
-          : `<div class="job-list">${filtered.map(renderInvRow).join("")}</div>`
-      }
+      <div id="inv-list-wrap">
+        ${state.inventory.length === 0
+          ? renderEmpty("No tires in stock", "Track inventory so you always know what's on hand.", "Add First Tire", "new-inv")
+          : filtered.length === 0
+            ? `<div class="empty"><div class="empty-ico">🔍</div><div class="empty-title">No matches for "${esc(_invSearch)}"</div><div class="empty-desc">Try a different size or clear your search.</div></div>`
+            : `<div class="job-list">${filtered.map(renderInvRow).join("")}</div>`
+        }
+      </div>
     </div>
   `;
 }
@@ -2777,25 +2780,56 @@ function renderInvRow(it) {
 
 function bindInventoryList() {
   const add = $("#inv-add"); if (add) add.onclick = () => { state.editingInv = null; state.view = "inv-form"; render(); };
-  $$("[data-inv]").forEach(b => b.onclick = () => { state.editingInv = b.dataset.inv; state.view = "inv-form"; render(); });
+  attachInvRowClicks();
   $$("[data-action='new-inv']").forEach(b => b.onclick = () => { state.editingInv = null; state.view = "inv-form"; render(); });
   const bulk = $("#inv-bulk"); if (bulk) bulk.onclick = () => showBulkImportModal();
 
-  // Search input — filters the list below in place (re-renders while preserving focus + caret)
+  // Search input — update ONLY the list area, never re-render the page
+  // (re-rendering kills focus, collapses the iOS keyboard, and resets keyboard type)
   const search = $("#inv-search");
   if (search) {
     search.addEventListener("input", () => {
       _invSearch = search.value;
-      const caret = search.selectionStart;
-      render();
-      // Restore focus + caret after re-render
-      const newInput = document.getElementById("inv-search");
-      if (newInput) {
-        newInput.focus();
-        try { newInput.setSelectionRange(caret, caret); } catch {}
-      }
+      refreshInventoryList();
     });
   }
+}
+
+function attachInvRowClicks() {
+  $$("[data-inv]").forEach(b => b.onclick = () => {
+    state.editingInv = b.dataset.inv;
+    state.view = "inv-form";
+    render();
+  });
+}
+
+// Re-render ONLY the filtered list region — keeps the search input (and its keyboard) intact
+function refreshInventoryList() {
+  const wrap = document.getElementById("inv-list-wrap");
+  if (!wrap) return;
+  const q = (_invSearch || "").toLowerCase().trim();
+  const filtered = q
+    ? state.inventory.filter(i => {
+        const hay = `${i.size || ""} ${i.brand || ""} ${i.model || ""} ${i.condition || ""}`.toLowerCase();
+        const normalizedQuery = normalizeTireSize(q);
+        const normalizedSize = normalizeTireSize(i.size);
+        return hay.includes(q) || (normalizedQuery && normalizedSize && normalizedSize.toLowerCase().includes(normalizedQuery.toLowerCase()));
+      })
+    : state.inventory;
+
+  if (state.inventory.length === 0) {
+    wrap.innerHTML = renderEmpty("No tires in stock", "Track inventory so you always know what's on hand.", "Add First Tire", "new-inv");
+  } else if (filtered.length === 0) {
+    wrap.innerHTML = `<div class="empty"><div class="empty-ico">🔍</div><div class="empty-title">No matches for "${esc(_invSearch)}"</div><div class="empty-desc">Try a different size or clear your search.</div></div>`;
+  } else {
+    wrap.innerHTML = `<div class="job-list">${filtered.map(renderInvRow).join("")}</div>`;
+  }
+  // Re-attach click handlers on the newly rendered rows
+  attachInvRowClicks();
+  // Also rebind empty-state action buttons if any
+  $$("[data-action='new-inv']").forEach(b => b.onclick = () => {
+    state.editingInv = null; state.view = "inv-form"; render();
+  });
 }
 
 /* ============================================================
