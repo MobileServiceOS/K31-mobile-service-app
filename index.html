@@ -277,6 +277,31 @@
     border-radius: 10px; padding: 10px 12px;
   }
 
+  /* LIVE INVENTORY STATUS UNDER TIRE SIZE */
+  .inv-status {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 10px; padding: 10px 12px;
+    border-radius: 10px; font-size: 13px; line-height: 1.4;
+    border: 1px solid;
+  }
+  .inv-status > span:first-child { font-size: 16px; flex-shrink: 0; }
+  .inv-status-ok {
+    background: rgba(34,197,94,.1); color: var(--success);
+    border-color: rgba(34,197,94,.3);
+  }
+  .inv-status-low {
+    background: rgba(234,179,8,.1); color: var(--warn);
+    border-color: rgba(234,179,8,.35);
+  }
+  .inv-status-missing {
+    background: rgba(156,163,175,.08); color: var(--dim);
+    border-color: var(--border);
+  }
+  .inv-status-unknown {
+    background: var(--surface2); color: var(--mute);
+    border-color: var(--border);
+  }
+
   .field { margin-bottom: 16px; }
   .field-inline { margin-top: 12px; }
   .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
@@ -824,6 +849,83 @@ function tsToMs(t) {
 }
 
 /* ============================================================
+   INVENTORY SIZE NORMALIZATION
+   Normalizes tire sizes so different input formats all match:
+     "225/45R17" == "225/45/17" == "225 / 45 / R17" == "225/45r17"
+   Returns a canonical string "225/45R17" or "" if not parseable
+   ============================================================ */
+function normalizeTireSize(s) {
+  if (!s) return "";
+  const m = String(s).match(/(\d{3})\s*[\/\-\s]+\s*(\d{2,3})\s*[\/\-\s]*\s*R?\s*(\d{2})/i);
+  if (!m) return "";
+  return `${m[1]}/${m[2]}R${m[3]}`;
+}
+
+/* ============================================================
+   INVENTORY DEDUCTION LOGIC
+   Given a desired tire size and qty, find matching inventory rows
+   (prefer "new" condition first, then "used"), decrement quantities,
+   return an array of { id, newQty, deducted } for each row touched.
+   Returns null if no matching size found.
+   ============================================================ */
+function planInventoryDeduction(tireSize, qtyNeeded) {
+  const targetSize = normalizeTireSize(tireSize);
+  if (!targetSize || !qtyNeeded || qtyNeeded <= 0) return null;
+
+  const matches = state.inventory
+    .filter(i => normalizeTireSize(i.size) === targetSize && (Number(i.quantity) || 0) > 0)
+    // Prefer New over Used; then higher qty first so we don't fragment
+    .sort((a, b) => {
+      const ac = a.condition === "new" ? 0 : 1;
+      const bc = b.condition === "new" ? 0 : 1;
+      if (ac !== bc) return ac - bc;
+      return (Number(b.quantity) || 0) - (Number(a.quantity) || 0);
+    });
+
+  if (matches.length === 0) return null;
+
+  const plan = [];
+  let remaining = qtyNeeded;
+  for (const row of matches) {
+    if (remaining <= 0) break;
+    const have = Number(row.quantity) || 0;
+    const take = Math.min(have, remaining);
+    plan.push({
+      id: row.id,
+      size: row.size,
+      condition: row.condition,
+      before: have,
+      deducted: take,
+      after: have - take,
+    });
+    remaining -= take;
+  }
+  return { plan, totalDeducted: qtyNeeded - remaining, shortfall: remaining };
+}
+
+async function applyInventoryDeduction(plan) {
+  if (!plan || !plan.plan) return;
+  for (const step of plan.plan) {
+    await updateDoc(doc(db, "users", state.user.uid, "inventory", step.id), {
+      quantity: step.after,
+      lastUsed: Date.now(),
+    });
+  }
+}
+
+async function restoreInventoryDeduction(deductions) {
+  if (!deductions || !Array.isArray(deductions) || deductions.length === 0) return;
+  for (const d of deductions) {
+    const current = state.inventory.find(i => i.id === d.id);
+    if (!current) continue; // inventory row was deleted — nothing to restore to
+    const newQty = (Number(current.quantity) || 0) + (Number(d.deducted) || 0);
+    await updateDoc(doc(db, "users", state.user.uid, "inventory", d.id), {
+      quantity: newQty,
+    });
+  }
+}
+
+/* ============================================================
    REVIEW SMS BUILDER
    Composes a personalized review request that tells the customer
    exactly what to mention — which drives longer, higher-quality reviews
@@ -994,17 +1096,47 @@ async function saveSettings(updates) {
 async function saveJob(data) {
   if (!state.user) return;
   const { id, ...rest } = data;
+
   if (id) {
-    await updateDoc(doc(db, "users", state.user.uid, "jobs", id), { ...rest, updatedAt: serverTimestamp() });
-  } else {
-    await addDoc(collection(db, "users", state.user.uid, "jobs"), {
-      ...rest, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    // EDIT existing job — do NOT re-deduct inventory. Preserve existing flag.
+    await updateDoc(doc(db, "users", state.user.uid, "jobs", id), {
+      ...rest, updatedAt: serverTimestamp(),
     });
+    return { deductions: null, shortfall: 0 };
   }
+
+  // NEW JOB — try to deduct inventory if it's a tire service with a size
+  const svc = SERVICES.find(s => s.id === rest.serviceId);
+  let deductions = null;
+  let shortfall = 0;
+  if (svc?.isTire && rest.tireSize && rest.tireQty > 0) {
+    const plan = planInventoryDeduction(rest.tireSize, rest.tireQty);
+    if (plan) {
+      await applyInventoryDeduction(plan);
+      deductions = plan.plan;
+      shortfall = plan.shortfall;
+    }
+  }
+
+  await addDoc(collection(db, "users", state.user.uid, "jobs"), {
+    ...rest,
+    inventoryDeducted: !!deductions,
+    inventoryDeductions: deductions || null,
+    inventoryShortfall: shortfall || 0,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  });
+
+  return { deductions, shortfall };
 }
 
 async function deleteJob(id) {
   if (!state.user) return;
+  // If this job deducted inventory, restore it before deletion
+  const job = state.jobs.find(j => j.id === id);
+  if (job?.inventoryDeducted && job?.inventoryDeductions) {
+    try { await restoreInventoryDeduction(job.inventoryDeductions); }
+    catch (e) { console.error("inventory restore failed:", e); }
+  }
   await deleteDoc(doc(db, "users", state.user.uid, "jobs", id));
 }
 
@@ -1657,6 +1789,7 @@ function renderJobForm() {
               <input type="number" min="1" id="f-tireQty" value="${d.tireQty || 1}"/>
             </div>
           </div>
+          <div id="inv-status" class="inv-status" style="display:none;"></div>
           <div class="row-2">
             <div class="field-inline">
               <label class="field-label">Brand</label>
@@ -1779,6 +1912,7 @@ function bindJobForm() {
     const tireSection = document.getElementById("tire-section");
     if (tireSection) tireSection.style.display = svc?.isTire ? "" : "none";
     refreshPricingPanel();
+    refreshInventoryStatus();
     if (window.__updateJobSaveBtn) window.__updateJobSaveBtn();
   });
 
@@ -1824,7 +1958,10 @@ function bindJobForm() {
     const el = $("#" + id); if (!el) return;
     const map = { "f-custName": "customerName", "f-custPhone": "customerPhone", "f-notes": "notes",
                   "f-tireSize": "tireSize", "f-tireBrand": "tireBrand", "f-tireModel": "tireModel" };
-    el.addEventListener("input", () => { _jobDraft[map[id]] = el.value; });
+    el.addEventListener("input", () => {
+      _jobDraft[map[id]] = el.value;
+      if (id === "f-tireSize") refreshInventoryStatus();
+    });
   });
 
   // Numeric inputs — update draft + refresh only pricing panel
@@ -1842,8 +1979,12 @@ function bindJobForm() {
       }
       refreshPricingPanel();
       if (id === "f-miles" && window.__updateJobSaveBtn) window.__updateJobSaveBtn();
+      if (id === "f-tireQty") refreshInventoryStatus();
     });
   });
+
+  // Initial inventory status check on form open
+  refreshInventoryStatus();
 
   // Location search — update draft + validate
   bindCitySearchInput("location", (v) => {
@@ -1933,7 +2074,7 @@ function bindJobForm() {
     const btn = $("#save-btn");
     btn.disabled = true; btn.textContent = "Saving...";
     try {
-      await saveJob({
+      const result = await saveJob({
         id: d.id || undefined,
         serviceId: d.serviceId,
         vehicleType: d.vehicleType,
@@ -1957,6 +2098,47 @@ function bindJobForm() {
         notes: d.notes.trim(),
         status: d.status,
       });
+
+      // Friendly post-save inventory feedback for new tire jobs
+      if (result && !d.id && d.tireSize) {
+        const qtyNeeded = Number(d.tireQty) || 1;
+        if (result.deductions && result.deductions.length > 0) {
+          const totalTaken = result.deductions.reduce((s, x) => s + x.deducted, 0);
+          if (result.shortfall > 0) {
+            alert(`Job saved. Deducted ${totalTaken} tire${totalTaken === 1 ? '' : 's'} from inventory — short ${result.shortfall} (not enough in stock).`);
+          } else if (qtyNeeded > 0) {
+            // Silent success — no alert needed
+          }
+        } else if (qtyNeeded > 0 && result.shortfall === 0 && !result.deductions) {
+          // Job had tire size but no matching inventory — inform so user can add it
+          // Only alert if the tire size was actually parseable
+          if (normalizeTireSize(d.tireSize)) {
+            const ok = confirm(`Job saved. No matching tire (${normalizeTireSize(d.tireSize)}) found in your inventory.\n\nAdd it to inventory now?`);
+            if (ok) {
+              _jobDraft = null;
+              state.editingJob = null;
+              state.viewingJob = null;
+              state.editingInv = null;
+              // Prefill the inventory form with the size we just used
+              _invDraft = {
+                _id: null,
+                size: normalizeTireSize(d.tireSize),
+                brand: d.tireBrand || "",
+                model: d.tireModel || "",
+                quantity: 0,
+                cost: 0,
+                sellPrice: 0,
+                condition: "new",
+                notes: "",
+              };
+              state.view = "inv-form";
+              render();
+              return;
+            }
+          }
+        }
+      }
+
       _jobDraft = null;
       state.editingJob = null;
       state.viewingJob = null;
@@ -1998,6 +2180,71 @@ function refreshPricingPanel() {
   // Update override placeholder so it reflects new suggested
   const overrideEl = document.getElementById("f-override");
   if (overrideEl) overrideEl.placeholder = `Leave blank to use ${fmt$(p.suggestedPrice)}`;
+}
+
+/* ============================================================
+   LIVE INVENTORY STATUS under tire size input
+   Shows:
+     ✓ In stock (2 available — 2 New)
+     ⚠ Low stock: only 1 available
+     ⚠ Not in inventory — will be noted on the job
+   Only on new jobs (editing doesn't re-deduct, so stock status is stale)
+   ============================================================ */
+function refreshInventoryStatus() {
+  const slot = document.getElementById("inv-status");
+  if (!slot || !_jobDraft) return;
+
+  const svc = SERVICES.find(s => s.id === _jobDraft.serviceId);
+  const isEdit = !!_jobDraft.id;
+
+  // Hide for non-tire services or edits (editing doesn't re-deduct)
+  if (!svc?.isTire || isEdit) {
+    slot.style.display = "none";
+    return;
+  }
+
+  const rawSize = (_jobDraft.tireSize || "").trim();
+  if (!rawSize) {
+    slot.style.display = "none";
+    return;
+  }
+
+  const normalized = normalizeTireSize(rawSize);
+  if (!normalized) {
+    slot.className = "inv-status inv-status-unknown";
+    slot.innerHTML = `<span>…</span><span class="dim">Enter a valid size like 225/45R17 to check stock</span>`;
+    slot.style.display = "flex";
+    return;
+  }
+
+  // Find all matching rows
+  const matches = state.inventory.filter(i => normalizeTireSize(i.size) === normalized);
+  const totalAvailable = matches.reduce((s, m) => s + (Number(m.quantity) || 0), 0);
+  const newCount = matches.filter(m => m.condition === "new").reduce((s, m) => s + (Number(m.quantity) || 0), 0);
+  const usedCount = totalAvailable - newCount;
+
+  const qtyNeeded = Number(_jobDraft.tireQty) || 1;
+
+  if (matches.length === 0) {
+    slot.className = "inv-status inv-status-missing";
+    slot.innerHTML = `<span>⚠</span><span>Not in inventory — it'll be noted on the job</span>`;
+  } else if (totalAvailable === 0) {
+    slot.className = "inv-status inv-status-missing";
+    slot.innerHTML = `<span>⚠</span><span>Out of stock (tracked, but 0 on hand)</span>`;
+  } else if (totalAvailable < qtyNeeded) {
+    slot.className = "inv-status inv-status-low";
+    const parts = [];
+    if (newCount) parts.push(`${newCount} New`);
+    if (usedCount) parts.push(`${usedCount} Used`);
+    slot.innerHTML = `<span>⚠</span><span><b>Only ${totalAvailable}</b> available (need ${qtyNeeded}) — ${parts.join(" + ")}</span>`;
+  } else {
+    slot.className = "inv-status inv-status-ok";
+    const parts = [];
+    if (newCount) parts.push(`${newCount} New`);
+    if (usedCount) parts.push(`${usedCount} Used`);
+    slot.innerHTML = `<span>✓</span><span><b>${totalAvailable}</b> in stock${parts.length ? ` (${parts.join(" + ")})` : ""} — ${qtyNeeded} will be deducted on save</span>`;
+  }
+  slot.style.display = "flex";
 }
 
 /* ============================================================
@@ -2461,6 +2708,16 @@ function showReviewSmsModal(job) {
    ============================================================ */
 function renderInventoryList() {
   const totalUnits = state.inventory.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+  const q = (_invSearch || "").toLowerCase().trim();
+  const filtered = q
+    ? state.inventory.filter(i => {
+        const hay = `${i.size || ""} ${i.brand || ""} ${i.model || ""} ${i.condition || ""}`.toLowerCase();
+        const normalizedQuery = normalizeTireSize(q);
+        const normalizedSize = normalizeTireSize(i.size);
+        return hay.includes(q) || (normalizedQuery && normalizedSize && normalizedSize.toLowerCase().includes(normalizedQuery.toLowerCase()));
+      })
+    : state.inventory;
+
   return `
     <div class="page">
       <header class="page-head">
@@ -2474,6 +2731,15 @@ function renderInventoryList() {
         <button class="fab-mini" id="inv-add">+</button>
       </header>
 
+      <div class="search-wrap" style="margin-bottom:10px;">
+        <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="inv-search"
+            value="${esc(_invSearch || "")}"
+            placeholder="Search by size, brand, or model..." autocomplete="off"/>
+        </div>
+      </div>
+
       <div style="display:flex; gap:8px; margin-bottom:14px;">
         <button class="btn-ghost" id="inv-bulk" style="flex:1; padding: 10px 14px; min-height: auto; font-size: 13px;">
           📋 Bulk Import from Text
@@ -2482,7 +2748,9 @@ function renderInventoryList() {
 
       ${state.inventory.length === 0
         ? renderEmpty("No tires in stock", "Track inventory so you always know what's on hand.", "Add First Tire", "new-inv")
-        : `<div class="job-list">${state.inventory.map(renderInvRow).join("")}</div>`
+        : filtered.length === 0
+          ? `<div class="empty"><div class="empty-ico">🔍</div><div class="empty-title">No matches for "${esc(_invSearch)}"</div><div class="empty-desc">Try a different size or clear your search.</div></div>`
+          : `<div class="job-list">${filtered.map(renderInvRow).join("")}</div>`
       }
     </div>
   `;
@@ -2512,6 +2780,22 @@ function bindInventoryList() {
   $$("[data-inv]").forEach(b => b.onclick = () => { state.editingInv = b.dataset.inv; state.view = "inv-form"; render(); });
   $$("[data-action='new-inv']").forEach(b => b.onclick = () => { state.editingInv = null; state.view = "inv-form"; render(); });
   const bulk = $("#inv-bulk"); if (bulk) bulk.onclick = () => showBulkImportModal();
+
+  // Search input — filters the list below in place (re-renders while preserving focus + caret)
+  const search = $("#inv-search");
+  if (search) {
+    search.addEventListener("input", () => {
+      _invSearch = search.value;
+      const caret = search.selectionStart;
+      render();
+      // Restore focus + caret after re-render
+      const newInput = document.getElementById("inv-search");
+      if (newInput) {
+        newInput.focus();
+        try { newInput.setSelectionRange(caret, caret); } catch {}
+      }
+    });
+  }
 }
 
 /* ============================================================
@@ -2680,6 +2964,7 @@ function showBulkImportModal() {
 }
 
 let _invDraft = null;
+let _invSearch = "";
 
 function renderInventoryForm() {
   const existing = state.editingInv ? state.inventory.find(i => i.id === state.editingInv) : null;
