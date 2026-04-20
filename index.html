@@ -2460,6 +2460,7 @@ function showReviewSmsModal(job) {
    INVENTORY
    ============================================================ */
 function renderInventoryList() {
+  const totalUnits = state.inventory.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
   return `
     <div class="page">
       <header class="page-head">
@@ -2467,11 +2468,17 @@ function renderInventoryList() {
           <div class="logo-compact"><img src="${LOGO_SRC}" alt=""/></div>
           <div>
             <div class="greet">Tire Inventory</div>
-            <h1 class="biz">${state.inventory.length} Item${state.inventory.length === 1 ? "" : "s"}</h1>
+            <h1 class="biz">${state.inventory.length} size${state.inventory.length === 1 ? "" : "s"} · ${totalUnits} unit${totalUnits === 1 ? "" : "s"}</h1>
           </div>
         </div>
         <button class="fab-mini" id="inv-add">+</button>
       </header>
+
+      <div style="display:flex; gap:8px; margin-bottom:14px;">
+        <button class="btn-ghost" id="inv-bulk" style="flex:1; padding: 10px 14px; min-height: auto; font-size: 13px;">
+          📋 Bulk Import from Text
+        </button>
+      </div>
 
       ${state.inventory.length === 0
         ? renderEmpty("No tires in stock", "Track inventory so you always know what's on hand.", "Add First Tire", "new-inv")
@@ -2504,6 +2511,172 @@ function bindInventoryList() {
   const add = $("#inv-add"); if (add) add.onclick = () => { state.editingInv = null; state.view = "inv-form"; render(); };
   $$("[data-inv]").forEach(b => b.onclick = () => { state.editingInv = b.dataset.inv; state.view = "inv-form"; render(); });
   $$("[data-action='new-inv']").forEach(b => b.onclick = () => { state.editingInv = null; state.view = "inv-form"; render(); });
+  const bulk = $("#inv-bulk"); if (bulk) bulk.onclick = () => showBulkImportModal();
+}
+
+/* ============================================================
+   BULK INVENTORY IMPORT
+   Paste a list, parse it, preview, then save everything as one batch
+   ============================================================ */
+function parseTireList(text) {
+  const lines = (text || "").split(/\r?\n/);
+  const entries = [];
+  const errors = [];
+  // Accepts formats like "245/45/18 . 2", "235/40/19.2", "245/65/17.1", "205/60/16  2", "245/45R18 2"
+  const regex = /^\s*(\d{3})\s*\/\s*(\d{2})\s*\/?\s*R?\s*(\d{2})\s*[.\s,\-:xX]+(\d+)\s*$/;
+  lines.forEach((line, i) => {
+    const raw = line.trim();
+    if (!raw) return;
+    const m = raw.match(regex);
+    if (!m) {
+      errors.push({ line: i + 1, text: raw });
+      return;
+    }
+    const [, w, a, r, q] = m;
+    entries.push({
+      size: `${w}/${a}R${r}`,
+      width: Number(w), aspect: Number(a), rim: Number(r),
+      quantity: Number(q),
+      raw,
+    });
+  });
+  // Merge duplicates by size
+  const merged = {};
+  entries.forEach(e => {
+    if (merged[e.size]) {
+      merged[e.size].quantity += e.quantity;
+      merged[e.size].mergedCount = (merged[e.size].mergedCount || 1) + 1;
+    } else {
+      merged[e.size] = { ...e };
+    }
+  });
+  return { entries: Object.values(merged), errors, totalRaw: entries.length };
+}
+
+function showBulkImportModal() {
+  const c = $("#modal-container");
+  c.innerHTML = `
+    <div class="modal-bg" id="bulk-bg">
+      <div class="modal" id="bulk-inner">
+        <div class="modal-head">
+          <h3>📋 Bulk Import Tires</h3>
+          <button class="icon-btn" id="bulk-close">✕</button>
+        </div>
+
+        <div class="field-inline">
+          <label class="field-label">Condition for all imported tires</label>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="chip on" data-bulk-cond="new">New</button>
+            <button type="button" class="chip" data-bulk-cond="used">Used</button>
+          </div>
+        </div>
+
+        <div class="field-inline">
+          <label class="field-label">Paste list (one tire per line)</label>
+          <textarea id="bulk-text" rows="10" placeholder="Example:
+245/45/18 . 2
+235/40/19 . 1
+225/65/17 . 3"></textarea>
+          <p class="hint">Format: <code>width/aspect/rim . quantity</code> — any separator works (space, period, comma). Duplicates are merged.</p>
+        </div>
+
+        <button class="btn-ghost full" id="bulk-preview" style="width:100%;">Preview →</button>
+
+        <div id="bulk-result" style="margin-top:14px; display:none;"></div>
+      </div>
+    </div>
+  `;
+
+  const close = () => { c.innerHTML = ""; };
+  $("#bulk-bg").onclick = (e) => { if (e.target.id === "bulk-bg") close(); };
+  $("#bulk-close").onclick = close;
+
+  // Condition picker
+  let _bulkCond = "new";
+  $$("[data-bulk-cond]").forEach(b => b.onclick = () => {
+    _bulkCond = b.dataset.bulkCond;
+    $$("[data-bulk-cond]").forEach(x => x.classList.toggle("on", x === b));
+  });
+
+  $("#bulk-preview").onclick = () => {
+    const text = $("#bulk-text").value;
+    const { entries, errors, totalRaw } = parseTireList(text);
+    const result = $("#bulk-result");
+    const totalUnits = entries.reduce((s, e) => s + e.quantity, 0);
+    const mergedNote = totalRaw > entries.length
+      ? `<div class="dim" style="font-size:12px; margin-top:4px;">Merged ${totalRaw - entries.length} duplicate${totalRaw - entries.length === 1 ? '' : 's'} by summing quantities.</div>`
+      : "";
+
+    if (entries.length === 0 && errors.length === 0) {
+      result.innerHTML = `<div class="err-msg">Paste some tires above first.</div>`;
+      result.style.display = "block";
+      return;
+    }
+
+    result.innerHTML = `
+      <div class="card" style="margin-bottom:0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <div>
+            <div style="font-size:20px; font-weight:800;">${entries.length} unique size${entries.length === 1 ? '' : 's'}</div>
+            <div class="dim" style="font-size:13px;">${totalUnits} total unit${totalUnits === 1 ? '' : 's'} · all marked <b style="color: var(--success); text-transform: uppercase;">${_bulkCond}</b></div>
+            ${mergedNote}
+          </div>
+        </div>
+
+        ${errors.length > 0 ? `
+          <div class="review-warn" style="margin-bottom:10px;">
+            ⚠ <b>${errors.length} line${errors.length === 1 ? '' : 's'} couldn't be parsed</b> and will be skipped:
+            ${errors.slice(0, 5).map(e => `<div class="dim" style="font-size:12px;">Line ${e.line}: "${esc(e.text)}"</div>`).join("")}
+            ${errors.length > 5 ? `<div class="dim" style="font-size:12px;">...and ${errors.length - 5} more</div>` : ''}
+          </div>
+        ` : ''}
+
+        <div style="max-height: 200px; overflow-y: auto; background: var(--surface2); border-radius: 10px; padding: 8px;">
+          ${entries.map(e => `
+            <div style="display:flex; justify-content:space-between; padding:6px 8px; font-size:13px; border-bottom:1px solid var(--border);">
+              <span style="font-family: monospace;">${esc(e.size)}</span>
+              <span><b>${e.quantity}</b>${e.mergedCount ? ` <span class="dim" style="font-size:11px;">(merged from ${e.mergedCount})</span>` : ''}</span>
+            </div>
+          `).join("")}
+        </div>
+
+        <button class="btn-primary full" id="bulk-confirm" style="margin-top:12px;">
+          Add ${entries.length} tire${entries.length === 1 ? '' : 's'} to inventory
+        </button>
+      </div>
+    `;
+    result.style.display = "block";
+
+    $("#bulk-confirm").onclick = async () => {
+      const btn = $("#bulk-confirm");
+      btn.disabled = true;
+      let done = 0;
+      btn.textContent = `Adding... 0 / ${entries.length}`;
+      try {
+        for (const e of entries) {
+          await saveInventory({
+            size: e.size,
+            brand: "",
+            model: "",
+            quantity: e.quantity,
+            cost: 0,
+            sellPrice: 0,
+            condition: _bulkCond,
+            notes: "Bulk imported",
+          });
+          done++;
+          btn.textContent = `Adding... ${done} / ${entries.length}`;
+        }
+        btn.textContent = `✓ Added ${done} tires`;
+        setTimeout(() => { close(); }, 1200);
+      } catch (ex) {
+        console.error(ex);
+        btn.disabled = false;
+        btn.textContent = `Failed after ${done}. Retry`;
+        alert("Error: " + prettyError(ex));
+      }
+    };
+  };
 }
 
 let _invDraft = null;
