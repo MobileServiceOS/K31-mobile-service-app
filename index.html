@@ -687,6 +687,18 @@
   .inv-qty { font-size: 15px; font-weight: 800; }
   .inv-qty.low { color: var(--warn); }
   .inv-qty.zero { color: var(--danger); }
+    .condition-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.5px; }
+    .cond-new { background: rgba(0,200,83,0.15); color: #00c853; }
+    .cond-used { background: rgba(255,193,7,0.15); color: #ffab00; }
+    .condition-toggle { display: flex; gap: 8px; margin-top: 4px; }
+    .cond-btn { flex: 1; padding: 10px; border-radius: 10px; border: 2px solid var(--glass-2); background: transparent; color: var(--chrome-mid); font-weight: 600; cursor: pointer; transition: var(--transition); }
+    .cond-btn.active-new { border-color: #00c853; background: rgba(0,200,83,0.1); color: #00c853; }
+    .cond-btn.active-used { border-color: #ffab00; background: rgba(255,193,7,0.1); color: #ffab00; }
+    .inv-suggest { background: var(--surface-2); border: 1px solid var(--glass-2); border-radius: 12px; margin-top: 4px; overflow: hidden; }
+    .inv-suggest-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; border: none; border-bottom: 1px solid var(--glass); background: transparent; cursor: pointer; text-align: left; font-size: 0.85rem; color: var(--text); transition: var(--transition); flex-wrap: wrap; }
+    .inv-suggest-item:hover { background: var(--glass); }
+    .inv-suggest-item:last-child { border-bottom: none; }
+    .low-stock-badge { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 0.65rem; font-weight: 700; }
   .inv-price { font-size: 11px; color: var(--dim); }
   .cond-new { color: var(--success); }
   .cond-used { color: var(--warn); }
@@ -1127,6 +1139,16 @@ async function saveJob(data) {
   });
 
   return { deductions, shortfall };
+
+  const draft = state._jobDraft || {};
+  if (draft._selectedInvId) {
+    const invItem = state.inventory.find(x => x.id === draft._selectedInvId);
+    if (invItem && (Number(invItem.quantity) || 0) > 0) {
+      const newQty = Math.max(0, (Number(invItem.quantity) || 0) - (Number(draft.tireQty) || 1));
+      await updateDoc(doc(db, "users", state.user.uid, "inventory", draft._selectedInvId), { quantity: newQty, updatedAt: serverTimestamp() });
+    }
+    delete draft._selectedInvId; delete draft._selectedInvCond;
+  }
 }
 
 async function deleteJob(id) {
@@ -1707,6 +1729,47 @@ function initJobDraft(existing) {
   };
 }
 
+function showInventorySuggestions(sizeVal) {
+  const panel = $("#inv-suggest-panel");
+  if (!panel) return;
+  const q = (sizeVal || "").trim().toLowerCase();
+  if (q.length < 2) { panel.style.display = "none"; return; }
+  const nq = normalizeTireSize(q);
+  const matches = state.inventory.filter(it => {
+    const ns = normalizeTireSize(it.size);
+    const hay = (it.size || "").toLowerCase();
+    return (nq && ns && ns.includes(nq)) || hay.includes(q);
+  }).filter(it => (Number(it.quantity) || 0) > 0).slice(0, 8);
+  if (!matches.length) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  panel.innerHTML = matches.map(it => {
+    const cBadge = it.condition === "new" ? "NEW" : "USED " + (it.treadDepth || "?") + "/32";
+    const cClass = it.condition === "new" ? "cond-new" : "cond-used";
+    return '<button class="inv-suggest-item" data-iid="' + it.id + '" data-size="' + (it.size||"") + '" data-brand="' + (it.brand||"") + '" data-model="' + (it.model||"") + '" data-price="' + (it.price||0) + '" data-cond="' + (it.condition||"new") + '" data-cost="' + (it.cost||0) + '">' +
+      '<span class="condition-badge ' + cClass + '">' + cBadge + '</span> ' +
+      '<strong>' + (it.size||"-") + '</strong> ' + (it.brand||"") + ' ' + (it.model||"") +
+      ' <span style="color:var(--success);font-weight:700;">$' + Number(it.price).toFixed(2) + '</span>' +
+      ' <span style="color:var(--chrome-mid);font-size:0.8rem;">Qty:' + (it.quantity||0) + '</span></button>';
+  }).join("");
+  panel.querySelectorAll(".inv-suggest-item").forEach(btn => {
+    btn.onclick = () => {
+      const d = state._jobDraft || {};
+      d.tireSize = btn.dataset.size; d.tireBrand = btn.dataset.brand;
+      d.tireModel = btn.dataset.model; d.materialCost = Number(btn.dataset.cost) || 0;
+      d._selectedInvId = btn.dataset.iid; d._selectedInvCond = btn.dataset.cond;
+      state._jobDraft = d;
+      const sizeEl = $("#f-tireSize"); if (sizeEl) sizeEl.value = d.tireSize;
+      const brandEl = $("#f-tireBrand"); if (brandEl) brandEl.value = d.tireBrand;
+      const modelEl = $("#f-tireModel"); if (modelEl) modelEl.value = d.tireModel;
+      const matEl = $("#f-matCost"); if (matEl) matEl.value = d.materialCost;
+      const statusEl = $("#inv-status");
+      if (statusEl) statusEl.innerHTML = '<span class="condition-badge ' + (btn.dataset.cond==="new"?"cond-new":"cond-used") + '">' + (btn.dataset.cond==="new"?"NEW":"USED") + '</span> selected from inventory';
+      panel.style.display = "none";
+      if (typeof calcPricing === "function") calcPricing();
+    };
+  });
+}
+
 function renderJobForm() {
   if (!_jobDraft || (state.editingJob?.id && _jobDraft.id !== state.editingJob.id) || (!_jobDraft.id && state.editingJob === null)) {
     const existing = state.editingJob?.id ? state.jobs.find(j => j.id === state.editingJob.id) : state.editingJob;
@@ -1790,6 +1853,7 @@ function renderJobForm() {
             </div>
           </div>
           <div id="inv-status" class="inv-status" style="display:none;"></div>
+          <div id="inv-suggest-panel" class="inv-suggest" style="display:none;max-height:200px;overflow-y:auto;"></div>
           <div class="row-2">
             <div class="field-inline">
               <label class="field-label">Brand</label>
@@ -2150,6 +2214,9 @@ function bindJobForm() {
       btn.disabled = false; btn.textContent = d.id ? "Update Job" : "Create Job";
     }
   };
+
+  const tireSizeEl = $("#f-tireSize");
+  if (tireSizeEl) { const oh = tireSizeEl.oninput; tireSizeEl.oninput = (e) => { if (oh) oh(e); showInventorySuggestions(e.target.value); }; }
 }
 
 // Targeted pricing refresh — updates only the pricing panel numbers, preserves input focus
@@ -2709,14 +2776,15 @@ function showReviewSmsModal(job) {
 function renderInventoryList() {
   const totalUnits = state.inventory.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
   const q = (_invSearch || "").toLowerCase().trim();
-  const filtered = q
-    ? state.inventory.filter(i => {
+  const condFiltered = _invCondFilter ? state.inventory.filter(i => i.condition === _invCondFilter) : state.inventory;
+    const filtered = q
+    ? condFiltered.filter(i => {
         const hay = `${i.size || ""} ${i.brand || ""} ${i.model || ""} ${i.condition || ""}`.toLowerCase();
         const normalizedQuery = normalizeTireSize(q);
         const normalizedSize = normalizeTireSize(i.size);
         return hay.includes(q) || (normalizedQuery && normalizedSize && normalizedSize.toLowerCase().includes(normalizedQuery.toLowerCase()));
       })
-    : state.inventory;
+    : condFiltered;
 
   return `
     <div class="page">
@@ -2774,7 +2842,8 @@ function renderInvRow(it) {
         <div class="inv-qty ${qtyClass}">${qty}×</div>
         <div class="inv-price">${fmt$(it.sellPrice)} ea</div>
       </div>
-    </button>
+    
+          ${qty === 0 ? '<div class="low-stock-badge" style="color:var(--danger);font-weight:700;font-size:0.7rem;text-align:right;">OUT OF STOCK</div>' : qty <= 2 ? '<div class="low-stock-badge" style="color:var(--warning);font-weight:600;font-size:0.7rem;text-align:right;">LOW STOCK</div>' : ""}</button>
   `;
 }
 
@@ -2999,6 +3068,7 @@ function showBulkImportModal() {
 
 let _invDraft = null;
 let _invSearch = "";
+let _invCondFilter = null;
 
 function renderInventoryForm() {
   const existing = state.editingInv ? state.inventory.find(i => i.id === state.editingInv) : null;

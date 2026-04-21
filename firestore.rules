@@ -1,11 +1,31 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Users can only read/write their own data
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if request.auth != null && request.auth.uid == userId
+        && request.resource.data.keys().hasAll(['phone'])
+        && request.resource.data.phone is string;
       match /jobs/{jobId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if request.auth != null && request.auth.uid == userId
+          && request.resource.data.keys().hasAll(['status', 'service'])
+          && request.resource.data.status is string
+          && request.resource.data.service is string;
+      }
+      match /inventory/{itemId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if request.auth != null && request.auth.uid == userId
+          && request.resource.data.keys().hasAll(['size', 'condition', 'price', 'quantity'])
+          && request.resource.data.size is string
+          && request.resource.data.size.size() > 0
+          && request.resource.data.size.size() < 50
+          && request.resource.data.condition in ['new', 'used']
+          && request.resource.data.price is number
+          && request.resource.data.price >= 0
+          && request.resource.data.quantity is number
+          && request.resource.data.quantity >= 0
+          && (request.resource.data.condition == 'new' || request.resource.data.treadDepth is number);
       }
       match /locations/{locId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
